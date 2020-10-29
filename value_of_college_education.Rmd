@@ -1,0 +1,230 @@
+---
+title: "Value of College Education"
+author: "Travis Andersen"
+date: "1/21/2020"
+output: pdf_document
+---
+
+```{r global, echo = FALSE, message = FALSE}
+library(tidyverse)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE)
+options(scipen = 999)
+
+df <- read_csv("/cloud/project/Data/Salary.csv")
+```
+
+# 1.
+
+Following is a scatterplot of GPA and salary with gender being designated with color.   
+
+```{r}
+ggplot(df, aes(x = GPA, y = Salary, col = Gen)) +
+  geom_point() +
+  geom_smooth(se = FALSE) +
+  labs(
+    title = "GPA vs Salary",
+    x = "GPA",
+    y = "Salary"
+  )
+
+cor <- cor(df$Salary, df$GPA) %>% 
+  round(4)
+```
+
+From the graph above, it seems that as GPA increases, salary increases. The correlation between GPA and salary is `r cor`. There also seems to be evidence for males being payed more than females. Below are side-by-side boxplots which compare salaries across different majors.  
+
+```{r}
+ggplot(df, aes(x = MajorCategory, y = Salary)) +
+  geom_boxplot() + 
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(
+    title = "Boxplots of Salary by Major",
+    x = "Major",
+    y = "Salary"
+  )
+```
+
+From these boxplots it appears that there is evidence for certain majors being payed more than others.  
+
+# 2.
+
+$$\overline{y} \sim MVN(\textbf{X} \overline{\beta}, \sigma^2 \textbf{I})$$
+
+$\overline{\beta}$ is a vector containing a coefficient for each major except one, a coefficient for GPA, a coefficient for gender, and a coefficient for the intercept. $\sigma^2$ is the variance about the best-fit line. By fitting our model, we obtain estimates of these model parameters. To evaluate if there is a difference in majors, we test to see if all of the coefficients corresponding to major are equal to zero. To evaluate if there is a difference in gender, we test to see if $\beta_\text{male} = 0$. 
+
+# 3.
+
+```{r}
+x <- model.matrix(Salary~., df)
+y <- df$Salary
+beta <- solve(t(x) %*% x) %*% t(x) %*% y
+beta %>% 
+  knitr::kable(
+    col.names = "Estimate for Beta",
+    caption = "Parameter estimates",
+    digits = 2
+  )
+```
+
+If someone was a male instead of a female, their expected salary would increase by 5931.6270, holding all else constant. As GPA increases by one point, expected salary increases by 5488.7368, holding all else constant. 
+
+```{r}
+s_squared <- (t(y - x %*% beta) %*% (y - x %*% beta))/(nrow(df) - 18) %>% 
+  round(4)
+
+lm <- lm(Salary ~ MajorCategory + Gen + GPA, df)
+r_squared <- summary(lm)$r.squared %>% 
+  round(4)
+```
+
+The estimate for residual variance is `r s_squared`. The r-squared for the model is `r r_squared`. 
+
+
+# 4.
+
+```{r}
+ggplot(df, aes(x = MajorCategory, y = Salary, col = Gen)) +
+  geom_boxplot() + 
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(
+    title = "Salary by Major and Gender",
+    x = "Major",
+    y = "Salary"
+  )
+
+int_anova <- anova(
+  lm(Salary ~ MajorCategory + Gen + GPA + MajorCategory:Gen, df),
+  lm(Salary ~ MajorCategory + Gen + GPA, df)
+)
+```
+
+From the above boxplots, it seems that the effect gender has on salary depends on the major. For example, in the Agriculture and Natural Resources field the gap between male's and female's salary is much greater than in many other fields. To test this hypothesis, we create two models, one with an interaction term and the other without, and run an F test. Our null hypothesis is that the two models are the same, and the alternative hypothesis is that the two models are different. The F-statistic from the test is 4.3595, and the p-value is 0.000000072. Since the p-value is so small, we reject the null hypothesis and conclude that there is a significant interaction between gender and major. 
+
+# 5.
+
+```{r}
+lm <- lm(Salary ~ MajorCategory + Gen + GPA + MajorCategory:Gen, df)
+
+car::avPlots(lm)
+```
+
+From the added variable plots we can see that GPA and Salary are linearly related, and that all other variables are categorical. Therefore, the assumption of linearity is met.  
+
+It is possible that the salary of one person would affect the salary of another, but for the type of data we have in this dataset, it is safe to assume independence.  
+
+```{r}
+ggplot() +
+  geom_histogram(aes(x = MASS::stdres(lm))) +
+  labs(
+    title = "Histogram of Standardized Residuals",
+    x = "Standardized Residuals"
+  )
+ks_test <- ks.test(MASS::stdres(lm), "pnorm")
+```
+
+From the above histogram, we can see that the residuals follow a normal distribution. A ks-test returns a p-value of 0.7421. Therefore, the assumption of normality is met. 
+
+```{r}
+ggplot() +
+  geom_point(aes(x = lm$fitted.values, y = MASS::stdres(lm))) +
+  labs(
+    title = "Plot of fitted values vs standardized residuals",
+    x = "Fitted Values",
+    y = "Standardized Residuals"
+  )
+bp_test <- lmtest::bptest(lm)
+```
+
+From the plot above it seems that the variance in residuals does not change with the value of fitted values, and a Breusch-Pagan test returns a p-value of 0.6075, so the assumption of equal variance is met. 
+
+# 6.
+
+```{r}
+confint(lm, level = 0.97)[c("GPA", "GenM", "MajorCategoryArts"),] %>% 
+  knitr::kable(
+    digits = 2,
+    col.names = c("Lower", "Upper"),
+    caption = "97% Confidence Interval for a few parameters"
+  )
+```
+
+We are 97% confident that as GPA increases by one, holding all else constant, the expected salary will increase by between 4646.39 and 6129.76. We are 97% confident that if someone becomes male, holding all else constant, their expected salary will increase by between 9395.57 and 24387.63. We are 97% confident that if someone changed their major from Agriculture and Natural Resources to Arts, holding all else constant, their expected salary will increase by between -3377.77 and 4805.19.   
+
+# 7.
+
+```{r}
+int_test <- multcomp::glht(
+  lm, 
+  t(matrix(c(rep(0, 17), 1, 0, 0, 1, rep(0, 12)))), 
+  alternative = "less"
+) %>% 
+  summary
+
+int_ci <- multcomp::glht(
+  lm, 
+  t(matrix(c(rep(0, 17), 1, 0, 0, 1, rep(0, 12)))), 
+  alternative = "two.sided"
+) %>% 
+  confint
+```
+
+We want to know if women earn less than men in the Computers and Mathematics major category. Our null hypothesis is that there is no difference in salary between men and women in the Computers and Mathematics major category. The alternative hypothesis is that women earn less than men in the Computers and Mathematics major category. The p-value is 0.0184, so we conclude that women earn less than men in the Computers and Mathematics major category. We are 95% confident that men earn between 460.95 and 14532.29 more than women in the Computers and Mathematics major category.    
+
+# 8.
+
+```{r}
+tibble(
+  MajorCategory = "Computers & Mathematics", 
+  Gen = "M",
+  GPA = 3.90
+) %>% 
+  predict.lm(lm, newdata = ., interval = "prediction") %>% 
+  knitr::kable(
+    digits = 2,
+    col.names = c("Point", "Lower", "Upper"),
+    caption = "Prediction interval for my salary"
+  )
+```
+
+My salary is predicted to be $93,162.19. We are 95% confident that my salary will be between $82,502.98 and $103,821.40.  
+
+# 9.
+
+```{r}
+rpmse <- rep(x=NA, times=nrow(df))
+bias <- rep(x=NA, times=nrow(df))
+wid <- rep(x=NA, times=nrow(df))
+cvg <- rep(x=NA, times=nrow(df))
+for(cv in 1:nrow(df)){
+  ## Split into test and training sets
+  test.set <- df[cv,]
+  train.set <- df[-cv,]
+  
+  ## Fit a lm() using the training data
+  train.lm <- lm(Salary ~ GPA + MajorCategory + Gen + Gen:MajorCategory, data=train.set)
+  
+  ## Generate predictions for the test set
+  my.preds <- predict.lm(train.lm, newdata=test.set, interval="prediction")
+  
+  ## Calculate bias
+  bias[cv] <- mean(my.preds[,'fit']-test.set$Salary)
+  
+  ## Calculate RPMSE
+  rpmse[cv] <- (test.set$Salary-my.preds[,'fit'])^2 %>% mean() %>% sqrt()
+  
+  ## Calculate Coverage
+  cvg[cv] <- ((test.set$Salary > my.preds[,'lwr']) & (test.set$Salary < my.preds[,'upr'])) %>% mean()
+  
+  ## Calculate Width
+  wid[cv] <- (my.preds[,'upr'] - my.preds[,'lwr']) %>% mean()
+  
+}
+mean_bias <- mean(bias)
+coverage <- mean(cvg)
+mean_rpmse <- mean(rpmse)
+sd <- sd(df$Salary)
+mean_width <- mean(wid)
+range <- max(df$Salary) - min(df$Salary)
+```
+
+In order to evaluate how well our model predicts, we ran a leave-out-one cross validation of our data. The mean bias was 0.10, so our model neither over nor under predicted much. The coverage was 0.9497, so the prediction intervals work as they should. The mean root predictive mean square error was 4358.08, which is much less than the standard deviation of salary, which was 10,996.17. The mean prediction width was 21,013.43, which is much less than the range of salary, which was 66,000. Therfore, our model does quite well at predicting.  

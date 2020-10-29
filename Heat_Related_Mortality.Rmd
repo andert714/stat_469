@@ -1,0 +1,153 @@
+---
+title: "Heat-related Mortality"
+author: "Travis Andersen"
+date: "3/27/2020"
+output: html_document
+---
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(broom)
+library(rgdal)
+library(rgeos)
+library(spdep)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+<!-- Identifying and characterizing urban vulnerability to heat is a key step in designing intervention strategies to combat negative consequences of extreme heat on human health. In this study, we seek to identify the most vulnerable populations to extreme heat by analyzing the impact of socio-demographics and minimum daily temperature on the risk of mortality for the 1487 census block groups in the greater Houston area. -->
+
+<!-- The dataset we consider for this analysis has the following variables collected on each of the 1487 census block groups in Houston: -->
+
+<!-- Variable Name	Description -->
+<!-- NOAC	The percent of homes without air conditioning in the block gruop -->
+<!-- MED_AGE	The median age of persons living in the block gruop -->
+<!-- HispanicPC	Percent hispanic in the block group -->
+<!-- under5PCT	Percent under 5 years in the block group -->
+<!-- over65PCT	Percent over 65 years in the block group -->
+<!-- povertyPCT	Percent living below poverty line in the block group -->
+<!-- alonePCT	Percent living alone in the block group -->
+<!-- MinTemp	Average minimum summer temperature in the block group -->
+<!-- RR	The relative risk of mortality in the block group -->
+
+# 1.
+<!-- Transform the RR into log(RR) and create exploratory plots of the data by looking at the relationship between log(RR) (the response variable) and a few of the explanatory variables. Comment on any general relationships you see from the data. -->
+
+```{r}
+shp_data <- rgdal::readOGR(dsn = "/cloud/project/Houston", layer = "HoustonHeat", verbose = FALSE)
+shp_data@data$id <- rownames(shp_data@data) #Assign ID to each polygon
+shp_df <- tidy(shp_data, region = "id") #Convert polygon info to data.frame()
+shp_df <- merge(shp_df, shp_data@data, by = "id") #Merge data w/polygon data.frame
+
+ggplot(shp_df, aes(x = NOAC, y = log(RR))) +
+  geom_point() +
+  labs(x = "No AC", y = "Log Relative Risk")
+
+ggplot(shp_df, aes(x = MED_AGE, y = log(RR))) +
+  geom_point() +
+  labs(x = "Median Age", y = "Log Relative Risk")
+
+ggplot(shp_df, aes(x = povertyPCT, y = log(RR))) +
+  geom_point() +
+  labs(x = "Poverty Percentage", y = "Log Relative Risk")
+
+ggplot(shp_df, aes(x = MinTemp, y = log(RR))) +
+  geom_point() +
+  labs(x = "Minimum Temperature", y = "Log Relative Risk")
+
+ggplot(data=shp_df, aes(x=long, y=lat, group=group, fill=log(RR))) + 
+  geom_polygon(color="black") + 
+  scale_fill_distiller(palette="RdBu")
+```
+
+From the above graphs it seems that there are positive relationships between log relative risk and no AC, median age, poverty percentage, and minimum temperature. There also seems to be some spatial correlation from the map above. 
+
+# 2.
+<!-- Fit an independent MLR model with a linear effect between log(RR) and all the explanatory variables. Explore the residuals to see if there is evidence of spatial correlation by mapping them and using a Moran’s I or Geary’s C test. -->
+
+```{r}
+ind_model <- lm(log(RR) ~ NOAC + MED_AGE + HispanicPC + BlackPCT + under5PCT + over65PCT + povertyPCT + alonePCT + MinTemp, shp_data@data)
+moran_test <- moran.test(x = resid(ind_model) , listw=nb2listw(poly2nb(shp_data)))
+shp_df$ind_res <- resid(ind_model)[match(shp_df$id, shp_data@data$id)]
+ggplot(data=shp_df, aes(x=long, y=lat, group=group, fill=ind_res)) + 
+  geom_polygon(color="black") + 
+  scale_fill_distiller(palette="RdBu")
+```
+
+A Moran's I test returns a p-value of 2.2 * 10^-16, which indicates that there is spatial correlation in the residuals of an independent model. The map plotting the residuals also indicates that there remains some spatial correlation. 
+
+# 3.
+<!-- Write out a CAR model for analyzing the mortality data in terms of parameters. Explain and interpret any parameters associated with the model. -->
+
+$$\textbf{y} = \textbf{X} \pmb{\beta} + \pmb{\epsilon} \text{ ; } \pmb{\epsilon} \sim CAR(\sigma^2)$$
+
+$\textbf{y}$ is a vector containing the relative risk from each observation. $\textbf{X}$ is the design matrix which contains a column of ones, followed by columns containing each respective predictor variable. $\pmb{\beta}$ is a vector containing the intercept coefficient, followed by the coefficients for each respective predictor variable. $\sigma^2$ is the variance of the data from the predicted values.  
+
+# 4.
+<!-- Fit your spatial CAR model (using minit=maxit=1000 iterations and 250 degrees of freedom for positive spatial correlation) and validate any assumptions you made to fit the model. -->
+
+```{r}
+A <- nb2mat(poly2nb(shp_data), style="B")
+colnames(A) <- rownames(A)
+model <- ngspatial::sparse.sglmm(
+  formula = log(RR) ~ NOAC + MED_AGE + HispanicPC + BlackPCT + under5PCT + over65PCT + povertyPCT + alonePCT + MinTemp, 
+  data = shp_data@data, 
+  A = A, 
+  attractive =250, 
+  minit = 10000,
+  maxit = 10000, 
+  verbose =TRUE, 
+  method ="RSR", 
+  x =TRUE
+)
+
+car::avPlots(ind_model)
+```
+
+We fit a spatial CAR model to our data. To check for linearity, we check added-variable plots to see if the relationships between the predictor variables and relative risk are linear. It seems to be pretty linear from the plots above.  
+
+```{r}
+moran_test <- moran.test(x = resid(model), listw=nb2listw(poly2nb(shp_data)))
+shp_df$res <- resid(model)[match(shp_df$id, shp_data@data$id)]
+ggplot(data=shp_df, aes(x=long, y=lat, group=group, fill=res)) + 
+  geom_polygon(color="black") + 
+  scale_fill_distiller(palette="RdBu")
+```
+
+To check for independence, we run another Moran's I test. We get a p-value of 0.97, indicating that there no longer exists spatial correlation. We also check a map of the decorrelated residuals, and it seems that there is no longer any spatial correlation.    
+
+```{r}
+ggplot() +
+  geom_histogram(aes(x = resid(model)))
+```
+
+To check for normality, we plot a histogram of the decorrelated residuals, and it seems that they follow a normal distribution. 
+
+```{r}
+ggplot() +
+  geom_point(aes(fitted(model), resid(model)))
+```
+
+Since the variance of the decorrelated residuals does not seem to change as we move from left to right on the plot above, it seems that the assumption of equal variance is met. 
+
+# 5.
+<!-- Calculate confidence intervals for the effect of each explanatory variable included in your model. Draw conclusions about who is at greatest risk for heat-related mortality based on your estimated effects. -->
+
+```{r}
+summary <- summary(model)
+```
+
+Above are confidence intervals for all our model parameters. The factors which contribute to the highest relative risk are no AC, being over 65, being alone, and there being a high minimum temperature. The percentage of people under 5 reduces risk. 
+
+# 6.
+<!-- Draw a map of the correlated residuals to try and reach conclusions about areas at risk of heat-related mortality not explained by your explanatory variables. -->
+
+```{r}
+spatialResid <- model$M%*%t(model$gamma.sample)
+spatialResid <- rowMeans(spatialResid)
+shp_df$spatial_res <- spatialResid[match(shp_df$id, shp_data@data$id)]
+ggplot(data=shp_df, aes(x=long, y=lat, group=group, fill=spatial_res)) + 
+  geom_polygon(color="black") + 
+  scale_fill_distiller(palette="RdBu")
+```
+
+From the above app, we see that our predictor variables cannot explain the extra heat in the inner city, and the cold in the peripheries of the city.   

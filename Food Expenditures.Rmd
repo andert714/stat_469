@@ -1,0 +1,181 @@
+---
+title: "Food Expenditures"
+author: "Travis Andersen"
+output: pdf_document
+---
+
+```{r global, echo = FALSE, message = FALSE, warning = FALSE}
+library(tidyverse)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+source("/cloud/project/glstools-master/predictgls.R")
+df <- read_table2("https://mheaton.byu.edu/docs/files/Stat469/Topics/1%20-%20Independence/2%20-%20Diagonal/HWCaseStudy/Data/FoodExpenses.txt")
+```
+
+# 1.
+
+```{r}
+ggplot(df, aes(x = Income, y = EatingOut)) +
+  geom_point() +
+  geom_smooth(se = FALSE) +
+  labs(
+    title = "Scatterplot of eating out expenditures vs income",
+    x = "Income",
+    y = "Eating Out Expenditure"
+  )
+
+cor <- cor(df$Income, df$EatingOut)
+```
+
+From the plot above, it seems that as income increases, eating out expenditures increase. The correlation between income and eating out expenditure is `r round(cor, 4)`.  
+
+# 2.
+
+```{r}
+lm_old <- lm(EatingOut ~ Income, df)
+
+ggplot() +
+  geom_point(aes(x = lm_old$fitted.values, y = MASS::stdres(lm_old))) +
+  labs(
+    x = "Fitted Values",
+    y = "Standardized Residuals",
+    title = "Scatterplot of fitted values against standardized residuals"
+  )
+
+bp_test <- lmtest::bptest(lm_old)
+```
+
+First, we fit a homoskedastic linear model, and evaluate if the assumption of equal variance is met. Since the variance of the residuals increases as fitted values increase, the assumption is not met. A Breusch-Pagan test for equal variance gives a p-value very close to zero. If we continue to use this model, our confidence and prediction intervals will not work as they should. Therefore, we need to account for heteroskedasticity.  
+
+# 3.
+
+$$\textbf{y} \sim MVN(\textbf{X} \pmb{\beta}, \sigma^2 \textbf{D}(\theta))$$
+$$d_{ii} = e^{2 log(X_i) \theta} $$
+
+Above is the heteroskedastic linear regression model in matrix form. $\pmb{\beta}$ is the vector of the intercept and the coefficient of income. $\sigma^2$ is the estimate of the residual variance. $\theta$ is the exponential variance parameter, which controls how much variance any particular observation is assigned. We can see the impact that income has on food expenditures by constructing a confidence interval for $\beta_1$, the coefficient of income. 
+
+# 4.
+
+```{r}
+gls <- nlme::gls(
+  EatingOut ~ Income, 
+  df, 
+  weights = nlme::varExp(form = ~ Income), 
+  method="ML"
+)
+
+ggplot(df, aes(x = Income, y = EatingOut)) + 
+  geom_point() + 
+  geom_smooth(se = FALSE) +
+  labs(
+    x = "Income",
+    y = "Eating Out",
+    title = "Scatterplot of income against eating out"
+  )
+```
+
+In order to use our model, we must check that it satisfies the assumptions of a linear regression model. First, we draw a scatterplot of the data, and confirm that it seems to be a linear relationship. It is possible that it slightly curves downward, but it is close enough to meet the assumption.  
+
+Second, the observations must be independent. The amount one family spends eating out should not significantly impact the amount another family spends eating out, so this assumption is met.  
+
+```{r}
+ggplot() + 
+  geom_histogram(aes(x = resid(gls, type="pearson"))) +
+  labs(
+    x = "Standardized Residuals",
+    y = "Count",
+    title = "Histogram of standardized residuals"
+  )
+```
+
+To check that the residuals follow a normal distribution, we check to see if a histogram of the residuals looks fairly normal. The histogram above looks fairly normal, so this condition is met.  
+
+```{r}
+ggplot() + 
+  geom_point(aes(x = gls$fitted, y = resid(gls, type="pearson"))) +
+  labs(
+    x = "Fitted Values",
+    y = "Standardized Residuals",
+    title = "Scatterplot of fitted values against standardized residuals"
+  )
+```
+
+To check for equal variance, we plot fitted values against standardized residuals. Since the variance of the standardized residuals does not change when fitted values change, the assumption of equal variance is validated.  
+
+# 5.
+
+```{r}
+n_cv <- 500 
+n_test <- round(nrow(df)*0.2)
+rpmse <- rep(x=NA, times=n_cv)
+bias <- rep(x=NA, times=n_cv)
+wid <- rep(x=NA, times=n_cv)
+cvg <- rep(x=NA, times=n_cv)
+for(cv in 1:n_cv){
+  test_obs <- sample(x=1:nrow(df), size=n_test)
+  test_df <- df[test_obs,]
+  train_df <- df[-test_obs,]
+  train_gls <- nlme::gls(
+    EatingOut ~ Income, 
+    train_df, 
+    weights = nlme::varExp(form = ~ EatingOut), 
+    method="ML"
+  )
+  my.preds <- predictgls(train_gls, test_df, 0.95)
+  bias[cv] <- mean(my.preds$Prediction-test_df$EatingOut)
+  rpmse[cv] <- (test_df$EatingOut-my.preds$Prediction)^2 %>% mean() %>% sqrt()
+  cvg[cv] <- ((test_df$EatingOut > my.preds$lwr) & (test_df$EatingOut < my.preds$upr)) %>% mean()
+  wid[cv] <- (my.preds$upr - my.preds$lwr) %>% mean()
+  
+}
+
+tibble(
+  `Root Predictive Mean Square Error` = rpmse,
+  Coverage = cvg
+) %>% 
+  pivot_longer(everything()) %>% 
+  ggplot(aes(x = value)) +
+  geom_density() +
+  facet_wrap(~name, scales = "free")
+
+mean_rpmse <- mean(rpmse)
+sd <- sd(df$EatingOut)
+```
+We ran 500 cross validations of our model, and calculated the following summary statistics. The coverage was very close to 0.95, where it should be. The root predictive mean square error was `r round(mean_rpmse)`. This is pretty good because the standard deviation of food expenditure was `r round(sd)`. 
+
+```{r}
+predictgls(gls, df) %>% 
+  ggplot(aes(x = Income)) +
+  geom_point(aes(y = EatingOut)) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), fill = "blue", alpha = 0.2) +
+  geom_line(aes(y = Prediction), color = "blue")
+```
+
+Above is a scatterplot of the data overlaid with model predictions and a 95% prediction interval.  
+
+# 6.
+
+```{r}
+ci <- gls %>% 
+  intervals(0.95)
+
+```
+
+$\beta_{Income}$ is estimated to be 0.4431, with a 95% confidence interval from 0.4165 to 0.4696. This means that when annual household income increases by one thousand, eating out expenditure increases by 0.4431 on average. $\theta$ is estimated to be 0.0135, with a 95% confidence interval from 0.01121 to 0.0159. This means that when salary increases, the variance in eating out expenditures increases. 
+
+# 7.
+
+```{r}
+test <- gls %>% 
+  multcomp::glht(t(matrix(c(0, 1))), rhs = 0.5) %>% 
+  summary
+```
+
+We want to test if when income increases by 1000, food expenditures increase by 0.5 or more. The null hypothesis is that $\beta_{Income} = 0.5$. The alternative hypothesis is that $\beta_{Income} < 0.5$. The p-value for this test is 0.000025, so we reject the null hypothesis and conclude that $\beta_{Income} = 0.5$. Therefore, the economy is not healthy for restaurant owners.   
+
+# 8.
+
+```{r}
+my_prediction <- predictgls(gls, tibble(Income = 90), 0.95)
+```
+
+With an income of 90000, I am predicted to spend 59.06 a week on eating out each week. We are 95% confident that I will spend between 40.20 and 77.93 on eating out each week. 

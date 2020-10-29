@@ -1,0 +1,201 @@
+---
+title: "Cardiovascular Health"
+author: "Travis Andersen"
+date: "3/12/2020"
+output: pdf_document
+---
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+library(tidyverse)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+source("/cloud/project/glstools-master/predictgls.R")
+source("/cloud/project/glstools-master/stdres.gls.R")
+```
+
+<!-- The Framingham Heart Study is a long term prospective study of the etiology of cardiovascular disease among a population of free living subjects in the community of Framingham, Massachusetts. The Framingham Heart Study was a landmark study in epidemiology in that it was the first prospective study of cardiovascular disease and identified the concept of risk factors and their joint effects. -->
+
+<!-- The dataset Tachycardia.txt contains a subset of data from the Framingham Heart Study for individuals who had 3 follow-up visits monitoring their heart health. Specifically, the variables included in the dataset are as follows: -->
+
+<!-- Variable Name	Description -->
+<!-- RANDID	Patients Random ID -->
+<!-- SEX	Patients sex (1=M, 2=F) -->
+<!-- TOTCHOL	Patients total blood cholesterol -->
+<!-- AGE	Patients Age -->
+<!-- SYSBP	Patients Systolic Blood Pressure -->
+<!-- DIABP	Patients Diastoloic Blood Pressure -->
+<!-- CURSMOKE	Patients smoking status (1=Smoker) -->
+<!-- BMI	Patients body mass index -->
+<!-- DIABETES	Patients diabetes status (1=Yes) -->
+<!-- BPMEDS	Patients medication stats (1=Taking meds) -->
+<!-- HEARTRTE	Patients heart rate -->
+<!-- GLUCOSE	Patients glucose level -->
+<!-- PERIOD	The visit number (3 visits per patient) -->
+
+<!-- In this analyses, we will be specifically looking at risk factors for Tachycardia (hence the name of the dataset) which refers to fast resting heart rate, usually over 100 beats per minute. Tachycardia can be dangerous, depending on its underlying cause and on how hard the heart has to work. Tachycardia significantly increases the risk of stroke, sudden cardiac arrest, and death. To analyze this dataset, do the following: -->
+
+# 1.
+<!-- Create exploratory plots of looking at the relationship between log(HEARTRTE) (the response variable) and some of the explanatory variables. Comment on any general relationships you see from the data. -->
+
+```{r}
+df <- read_table2("https://mheaton.byu.edu/docs/files/Stat469/Topics/2%20-%20TemporalCorrelation/2%20-%20Longitudinal/HWCaseStudy/Data/Tachycardia.txt") %>% 
+  mutate(HEARTRTE = log(HEARTRTE)) %>% 
+  mutate_at(c("RANDID", "SEX", "CURSMOKE", "DIABETES", "BPMEDS"), as.factor)
+
+df %>% 
+  select_if(is.numeric) %>% 
+  GGally::ggpairs()
+
+df %>% 
+  select(c("HEARTRTE", "SEX", "CURSMOKE", "DIABETES", "BPMEDS")) %>% 
+  pivot_longer(-HEARTRTE) %>% 
+  ggplot(aes(x = value, y = HEARTRTE)) +
+  geom_boxplot() +
+  facet_wrap(~name, nrow = 1, scales = "free")
+```
+
+There do not seem to be any particularly strong relationships between log heart rate and the predictor variables. 
+
+# 2.
+<!-- Fit an independent MLR model with a linear effect of all variables except RANDID and PERIOD. Explore the residuals to see if there is evidence of correlation within a patients from period to period (visit to visit). -->
+
+```{r}
+lm <- df %>% 
+  select(-RANDID, -PERIOD) %>% 
+  lm(formula = HEARTRTE ~ .)
+
+tibble(
+  randid = df$RANDID,
+  period = df$PERIOD,
+  res = lm$residuals
+) %>% 
+  pivot_wider(names_from = period, names_prefix = "Time", values_from = res) %>% 
+  select(-randid) %>% 
+  cor %>% 
+  knitr::kable(
+    digits = 4,
+    caption = "Correlation Matrix"
+  )
+
+```
+
+From the correlation matrix above, it seems that there is evidence for correlation within a patient from period to period.  
+
+# 3.
+<!-- To determine an appropriate correlation structure to use, fit a longitudinal MLR model with an AR1, MA1 and general symmetric correlation matrix within each patient but independent across patients. Compare the model fits using AIC (which can be extracted from a gls() object using AIC()). -->
+
+```{r}
+aic <- list(
+  ar1 = nlme::gls(
+    model = HEARTRTE ~ SEX + TOTCHOL + AGE + SYSBP + DIABP + CURSMOKE + BMI + DIABETES + BPMEDS + GLUCOSE + PERIOD,
+    data = df,
+    correlation = nlme::corAR1(form = ~PERIOD|RANDID),
+    method = "ML"
+  ),
+  ma1 = nlme::gls(
+    model = HEARTRTE ~ SEX + TOTCHOL + AGE + SYSBP + DIABP + CURSMOKE + BMI + DIABETES + BPMEDS + GLUCOSE + PERIOD,
+    data = df,
+    correlation = nlme::corARMA(form = ~PERIOD|RANDID, q = 1),
+    method = "ML"
+  ),
+  sym = nlme::gls(
+    model = HEARTRTE ~ SEX + TOTCHOL + AGE + SYSBP + DIABP + CURSMOKE + BMI + DIABETES + BPMEDS + GLUCOSE + PERIOD,
+    data = df,
+    correlation = nlme::corSymm(form = ~1|RANDID),
+    method = "ML"
+  )
+) %>% 
+  map_dbl(AIC)
+```
+
+Three different longitudinal models with AR(1), MA(1), and general symmetric correlation matrices were fit, and the model with the lowest AIC was chosen. In this case, that was a model with a general symmetric correlation matrix, which had an AIC of -5993.943. 
+
+# 4.
+<!-- Write out your model for analyzing the Tachycardia data in terms of parameters. Explain and interpret any parameters associated with the model. -->
+
+$$\textbf{y} \sim N(\textbf{X} \pmb{\beta}, \sigma^2\textbf{B})$$
+$$\textbf{B} = diag(\textbf{R}, ..., \textbf{R}) $$
+$$\textbf{R} = \begin{bmatrix} 1 & \rho_{12} & \rho_{13} \\ \rho_{12} & 1 & \rho_{23} \\ \rho_{13} & \rho_{23} & 1 \end{bmatrix}$$
+$\textbf{y}$ is a vector containing the heart rate measurements from each observation. $\textbf{X}$ is the design matrix which contains a column of ones, and with subsequent columns containing the values for each predictor variable. $\pmb{\beta}$ is a vector containing the intercept coefficient followed by the coefficient for each subsequent columns. $\sigma^2$ is the variance of the data from the predicted values. $\rho_{12}$, $\rho_{13}$, and $\rho_{23}$ are parameters which account for the correlation between visits of the same subject. 
+
+# 5.
+<!-- Fit your longitudinal model and validate any assumptions you made to fit the model. -->
+
+```{r}
+model <- nlme::gls(
+  model = HEARTRTE ~ SEX + TOTCHOL + AGE + SYSBP + DIABP + CURSMOKE + BMI + DIABETES + BPMEDS + GLUCOSE + PERIOD,
+  data = df,
+  correlation = nlme::corSymm(form = ~1|RANDID),
+  method = "ML"
+)
+
+lm(HEARTRTE ~ SEX + TOTCHOL + AGE + SYSBP + DIABP + CURSMOKE + BMI + DIABETES + BPMEDS + GLUCOSE + PERIOD, df) %>% 
+  car::avPlots()
+```
+
+From the added-variable plots above, we see that the relationships between the predictor variables and heart rate are linear.  
+
+```{r}
+res_df <- df %>% 
+  select(RANDID, PERIOD) %>% 
+  mutate(decor_res = stdres.gls(model), fitted = fitted(model))
+
+res_df %>% 
+  select(-fitted) %>% 
+  pivot_wider(names_from = PERIOD, values_from = decor_res) %>% 
+  select(-RANDID) %>% 
+  cor %>% 
+  knitr::kable(
+    digits = 4,
+    caption = "Correlation Matrix"
+  )
+```
+
+Above is a matrix of the correlation between visit times within individuals. We can see that after taking the temporal correlation into account, the residuals are no longer correlated.  
+
+```{r}
+ggplot(res_df, aes(x = decor_res)) +
+  geom_histogram() +
+  labs(
+    title = "Histogram of decorrelated residuals",
+    x = "Decorrelated Residuals",
+    y = "Count"
+  )
+```
+
+From the scatterplot above, we see that the assumption of normality is met.
+
+```{r}
+ggplot(res_df, aes(x = fitted, y = decor_res)) +
+  geom_point() +
+  labs(
+    x = "Fitted Values",
+    y = "Decorrelated Residuals",
+    title = "Scatterplot of fitted values against decorrelated residuals"
+  )
+```
+
+From the scatterplot above, it does not seem that the variance in decorrelated residuals changes depending on fitted values, so the assumption of equal variance is met. 
+
+# 6.
+<!-- Is DIABETES a risk factor for Tachycardia? Justify your answer and explain any effect of DIABETES on heart rate (include uncertainty in your conclusions). -->
+
+```{r}
+p_value <- summary(model)$tTable["DIABETES1", "p-value"]
+ci <- confint(model)["DIABETES1",]
+```
+
+A t-test for the impact of diabetes on heart rate returns a p-value of `r round(p_value, 4)`. Therefore, it does not have a significant impact on Tachycardia. If a patient has diabetes, we are 95% confident that their heart rate will increase from between `r round(ci["2.5 %"], 4)` and `r round(ci["97.5 %"], 4)`.
+
+# 7.
+<!-- What is the expected difference in heart rate for a female patient with at age 35 who is a smoker vs. an older female of 45 but not a smoker (assume the other characteristics are the same)? What does this say about the effect of smoking? -->
+
+```{r}
+diff <- multcomp::glht(
+  model,
+  matrix(c(0, 0, 0, -10, 0, 0, 1, 0, 0, 0, 0, 0), nrow = 1)
+) %>% 
+  confint
+
+```
+
+The expected difference in heart rate is (`r round(diff$confint[,"lwr"], 4)`, `r round(diff$confint[,"upr"], 4)`). This suggests that smoking is detrimental to heart rate because even though one woman is younger, she is expected to have a higher heart rate. 

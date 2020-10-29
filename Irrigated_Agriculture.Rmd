@@ -1,0 +1,182 @@
+---
+title: "Irrigated Agriculture"
+author: "Travis Andersen"
+date: "3/25/2020"
+output: pdf_document
+---
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+library(tidyverse)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+source("/cloud/project/glstools-master/stdres.gls.R")
+source("/cloud/project/glstools-master/predictgls.R")
+df <- read_table2("https://mheaton.byu.edu/docs/files/Stat469/Topics/3%20-%20SpatialCorrelation/1%20-%20PointReference/HWCaseStudy/Data/WaterHoldingCapacity.txt")
+```
+
+<!-- In addition to drought, increased competition for water resources, aquifer depletion, and climate change increase water scarcity for irrigated agriculture. Society’s ability to deal with water scarcity while still maintaining sufficient agriculture to support life is dependent upon the efficient use of water. That is, farmers need to efficiently manage their limited water resources by using only the necessary amount of water to grow their crops and allocating additional water for urban use. -->
+
+<!-- Water holding capacity (WHC) describes how much plant available water a specific soil can store. Knowing the variation of WHC for the soils within an irrigated field provides information to the farmer about how much water can be supplied to plants from the soil in a specific area of the field and how much irrigation water is required to replenish a depleted soil without leaching. Obtaining measurements of WHC, however, is an expensive and time consuming process. Water holding capacity can be estimated in the laboratory from soil cores collected from multiple depths and field positions or in the field by measuring water content over a time period long enough to observe a typical range of soil water conditions. In the latter case, permanent tubes (that reach a depth of 1.5 meters) must be installed at each location in the field and at regular (e.g. weekly) time intervals, farmers manually insert a neutron probe into each tube to measure, via reflectometry, soil water content at various depths. Thus, the cost and time requirements limit the utility of both of these methods for precision irrigation applications. -->
+
+<!-- In order to help farmers understand the WHC of soil across their agriculture field, this analysis seeks to use sparse WHC data on a field to predict WHC capacity at locations where measurements are not available. Specifically, the dataset we consider for this analysis has the following variables: -->
+
+<!-- Variable Name	Description -->
+<!-- Lon	Longitude location on the field -->
+<!-- Lat	Latitude location on the field -->
+<!-- Yield	Crop Yield at the location -->
+<!-- EC	Electroconductivity at the location -->
+<!-- WHC	Water Holding Capacity at the location -->
+
+# 1.
+<!-- Create exploratory plots of the data by looking at the relationship between WHC (the response variable) and Yield and EC. Comment on any general relationships you see from the data. -->
+
+```{r}
+df %>% 
+  select(Yield, EC, WHC) %>% 
+  GGally::ggpairs()
+```
+
+It appears that there is a small positive relationship between both crop yield and electroconductivity and water holding capacity. 
+
+# 2.
+<!-- Fit an independent MLR model with a linear effect between Yield, EC and the response variable WHC. Explore the residuals to see if there is evidence of spatial correlation by mapping the residuals and plotting the variogram of the residuals. -->
+
+```{r}
+df %>% 
+  drop_na %>% 
+  lm(formula = WHC ~ Yield + EC) %>% 
+  broom::augment() %>% 
+  left_join(df, c("Yield", "EC")) %>% 
+  ggplot(aes(x = Lon, y = Lat, fill = .resid)) +
+  geom_tile() +
+  scale_fill_distiller(palette="Spectral",na.value=NA) +
+  labs(
+    x = "Longitude",
+    y = "Latitude",
+    title = "Residuals map"
+  )
+```
+
+From a plot of the residuals of an independent model, it seems that there is spatial correlation, since tiles close to each other tend to have similar residual values.   
+
+```{r}
+gstat::variogram(
+  WHC ~ Yield + EC, 
+  ~ Lon + Lat,
+  data = df %>% 
+    drop_na
+) %>% 
+  plot
+```
+
+It also seems from the variogram that there is spatial correlation, since the semivariance increases with distance. 
+
+# 3.
+<!-- To determine an appropriate correlation structure to use, fit a spatial model using exponential, spherical and Gaussian correlation functions with a nugget effect (don’t forget to filter out the missing observations). Compare the model fits using AIC and use the best fit model for the remainder of the analysis. -->
+
+```{r}
+aic <- list(
+  exp = corExp(form = ~ Lon + Lat, nugget = TRUE),
+  spher = corSpher(form = ~ Lon + Lat, nugget = TRUE),
+  gaus = corGaus(form = ~ Lon + Lat, nugget = TRUE)
+) %>% 
+  map(
+    function(cor){
+      gls(
+        model = WHC ~ Yield + EC, 
+        data = drop_na(df),
+        correlation = cor,
+        method = "ML"
+      )
+    }
+  ) %>% 
+  map_dbl(AIC)
+```
+
+In order to find which correlation structure to use, I fit models with exponential, spherical, and gaussian correlation functions, and compared their AIC values. The model with an exponential correlation function had the lowest AIC score with an AIC of 272.37. 
+
+# 4.
+<!-- Write out your model for analyzing the agriculture data in terms of parameters. Explain and interpret any parameters associated with the model. -->
+
+$$\textbf{y} \sim N(\textbf{X} \pmb{\beta}, \sigma^2\textbf{R})$$
+$$\text{ where nondiagonal entries of } \textbf{R} \text{ are } \rho(\textbf{s}_i, \textbf{s}_j) = e^{\frac{-\|\textbf{s}_i - \textbf{s}_j\|}{\phi}} $$
+
+$\textbf{y}$ is a vector containing the water holding capacity from each observation. $\textbf{X}$ is the design matrix which contains a column of ones, a column with the crop yield counts, and a column with the electroconductivity measurements. $\pmb{\beta}$ is a vector containing the intercept coefficient, crop yield coefficient, and electroconductivity coefficient. $\sigma^2$ is the variance of the data from the predicted values. $\phi$ is a parameter which decides how soon the spatial correlation decays.   
+
+# 5. 
+<!-- Fit your spatial MLR model and validate any assumptions you made to fit the model. -->
+
+```{r}
+model <- gls(
+  model = WHC ~ Yield + EC, 
+  data = drop_na(df),
+  correlation = corExp(form = ~ Lon + Lat, nugget = TRUE),
+  method = "ML"
+)
+
+lm(WHC ~ Yield + EC, df) %>% 
+  car::avPlots()
+```
+
+Added variable plots of crop yield and electroconductivity with water holding capacity show that they have a linear relationship.  
+
+```{r}
+std_res <- stdres.gls(model)
+
+df %>% 
+  drop_na %>% 
+  mutate(std_res = std_res) %>% 
+  gstat::variogram(
+    object = std_res ~ 1,
+    locations = ~ Lon + Lat,
+    data = .
+  ) %>% 
+  plot
+```
+
+The variogram of the residuals from the spatial model seems to show that there no longer exists spatial correlation in the residuals of the model, since semivariance does not appear to increase with distance. 
+
+```{r}
+ggplot() +
+  geom_histogram(aes(x = std_res), bins = 10) +
+  labs(x = "Standardized Residuals", y = "Count", title = "Histogram of Standardized Residuals")
+
+```
+
+A histogram of the residuals appears to show that the model residuals follow a normal distribution. 
+
+```{r}
+ggplot() +
+  geom_point(aes(x = fitted(model), y = std_res)) +
+  labs(x = "Fitted Values", y = "Standardized Residuals", title = "Scatterplot of fitted values versus standardized residuals")
+```
+
+A scatterplot of fitted values versus standardized residuals shows that the variance of the standardized residuals does not depend on fitted values, so the assumption of equal variance seems to be met. 
+
+# 6.
+<!-- Carry out a hypothesis test that locations with higher yield had higher WHC (which would make sense because more water would be available for the plant to use). Include a confidence interval for the effect of Yield on WHC and interpret this interval. -->
+
+```{r}
+t_test <- multcomp::glht(model, matrix(c(0, 1, 0), nrow = 1), alternative = "greater") %>% 
+  summary
+ci <- confint(model)
+```
+
+A hypothesis test for whether $\beta_{yield} > 0$ returns a p-value of 0.00321. Therefore, crop yield has a significantly positive impact on water holding capacity. We are 95% confident that when crop yield increases by one, water holding capacity increases by between 0.0072 and 0.0443.  
+
+# 7.
+<!-- Predict WHC at all the locations where WHC is missing. Provide a plot of your predictions. -->
+
+```{r}
+predictgls(model, filter(df, is.na(WHC)), 0.95) %>% 
+  bind_rows(drop_na(df)) %>% 
+  mutate(WHC = ifelse(is.na(WHC), Prediction, WHC)) %>% 
+  ggplot(aes(x = Lon, y = Lat, fill = WHC)) +
+  geom_tile() +
+  scale_fill_distiller(palette="Spectral",na.value=NA) +
+  labs(
+    x = "Longitude",
+    y = "Latitude",
+    title = "Water holding capacity map (with predictions)"
+  )
+
+```
